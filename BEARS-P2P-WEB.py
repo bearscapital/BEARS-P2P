@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Terminal P2P - Eduardo", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="BEARS Terminal P2P", page_icon="⚡", layout="wide")
 
 st.markdown("""
     <style>
@@ -107,7 +107,7 @@ def obtener_mercado_publico(trade_type, trans_amount):
         return res.json().get('data', [])
     except: return []
 
-st.title("⚡ Terminal P2P - Eduardo")
+st.title("⚡ BEARS Terminal P2P")
 st.markdown("---")
 
 col_compra, col_centro, col_venta = st.columns([1.2, 1, 1.2])
