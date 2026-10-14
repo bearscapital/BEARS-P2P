@@ -112,6 +112,8 @@ def obtener_ordenes_activas(api_key, secret_key):
 @st.cache_data(ttl=3)
 def obtener_mercado_publico(trade_type, trans_amount):
     url = 'https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search'
+    
+    # Filtros base comunes
     filtros = { 
         "fiat": "VES", 
         "page": 1, 
@@ -121,14 +123,15 @@ def obtener_mercado_publico(trade_type, trans_amount):
         "countries": [], 
         "proMerchantAds": False, 
         "shieldMerchantAds": False, 
-        "publisherType": "merchant", 
         "payTypes": ["BancodeVenezuela", "BankTransferVenezuela"] 
     }
     
+    # Lógica condicional: Si es bloque, modificamos los parámetros para que Binance no falle
     if trans_amount == "bloque":
         filtros["tradeZone"] = "block"
-        filtros["transAmount"] = ""
+        filtros["publisherType"] = None 
     else:
+        filtros["publisherType"] = "merchant"
         filtros["transAmount"] = str(trans_amount)
         
     try:
