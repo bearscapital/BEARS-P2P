@@ -53,7 +53,7 @@ opcion_filtro = st.sidebar.radio("Selecciona los montos a escanear:", (
     "Perfil A (C: 70k | V: 20k)", 
     "Perfil B (C: 20k | V: 10k)", 
     "Perfil C (C: 70k | V: 70k)",
-    "Perfil D (C: Bloque | V: 1 Millón)"
+    "Perfil D (C: Bloque 37M | V: 1 Millón)"
 ))
 
 if opcion_filtro == "Perfil A (C: 70k | V: 20k)": 
@@ -63,10 +63,12 @@ elif opcion_filtro == "Perfil B (C: 20k | V: 10k)":
 elif opcion_filtro == "Perfil C (C: 70k | V: 70k)": 
     filtro_c, filtro_v = 70000, 70000
 else: 
-    filtro_c, filtro_v = "bloque", 1000000
+    filtro_c, filtro_v = 37000000, 1000000
 
-str_filtro_c = "BLOQUE (Todos los Bancos)" if filtro_c == "bloque" else f"{filtro_c:,}".replace(',', '.')
-str_filtro_v = f"{filtro_v:,}".replace(',', '.')
+es_bloque = opcion_filtro.startswith("Perfil D")
+
+str_filtro_c = f"BLOQUE ({filtro_c:,} VES)".replace(',', '.') if es_bloque else f"{filtro_c:,} VES".replace(',', '.')
+str_filtro_v = f"{filtro_v:,} VES".replace(',', '.')
 
 def realizar_peticion_firmada(endpoint, params, api_key, secret_key):
     url = 'https://api.binance.com' + endpoint
@@ -110,10 +112,9 @@ def obtener_ordenes_activas(api_key, secret_key):
     return ordenes_activas, None
 
 @st.cache_data(ttl=3)
-def obtener_mercado_publico(trade_type, trans_amount):
+def obtener_mercado_publico(trade_type, trans_amount, is_block=False):
     url = 'https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search'
     
-    # Filtros base comunes
     filtros = { 
         "fiat": "VES", 
         "page": 1, 
@@ -122,17 +123,17 @@ def obtener_mercado_publico(trade_type, trans_amount):
         "asset": "USDT", 
         "countries": [], 
         "proMerchantAds": False, 
-        "shieldMerchantAds": False
+        "shieldMerchantAds": False,
+        "transAmount": str(trans_amount)
     }
     
-    # NUEVA LÓGICA: Si es bloque, quitamos el filtro de bancos y exigimos que sea Zona Block
-    if trans_amount == "bloque":
+    # LÓGICA ESTRICTA DE BLOQUE Y BDV
+    if is_block and trade_type == "BUY":
         filtros["tradeZone"] = "block"
-        filtros["publisherType"] = None
-        filtros["payTypes"] = [] # Dejamos todos los bancos abiertos
+        filtros["publisherType"] = None 
+        filtros["payTypes"] = ["BancodeVenezuela"]
     else:
         filtros["publisherType"] = "merchant"
-        filtros["transAmount"] = str(trans_amount)
         filtros["payTypes"] = ["BancodeVenezuela", "BankTransferVenezuela"]
         
     try:
@@ -148,7 +149,8 @@ col_compra, col_centro, col_venta = st.columns([1.2, 1, 1.2])
 
 with col_compra:
     st.markdown('<div class="header-compra">COMPRA</div>', unsafe_allow_html=True)
-    st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>{ "TODOS LOS BANCOS" if filtro_c == "bloque" else "PM | BDV | TRANSF" }</b></span><span style="color: #0ecb81; font-weight: bold;">{str_filtro_c}</span></div>', unsafe_allow_html=True)
+    header_bancos_c = "SOLO BDV" if es_bloque else "PM | BDV | TRANSF"
+    st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>{header_bancos_c}</b></span><span style="color: #0ecb81; font-weight: bold;">{str_filtro_c}</span></div>', unsafe_allow_html=True)
     
     @st.fragment(run_every=timedelta(seconds=4))
     def render_seccion_compra():
@@ -165,7 +167,7 @@ with col_compra:
             html_c += '</table>'
             st.markdown(html_c, unsafe_allow_html=True)
         else:
-            mercado_c = obtener_mercado_publico("BUY", filtro_c)
+            mercado_c = obtener_mercado_publico("BUY", filtro_c, is_block=es_bloque)
             if mercado_c:
                 html_c = '<table class="p2p-table"><tr><th>#</th><th>PRECIO</th><th>DISP</th><th>USUARIO</th></tr>'
                 for idx, item in enumerate(mercado_c, 1): 
@@ -176,12 +178,12 @@ with col_compra:
                 html_c += '</table>'
                 st.markdown(html_c, unsafe_allow_html=True)
             else: 
-                st.info("Buscando anuncios... (Puede que no haya comerciantes online con esos filtros)")
+                st.info("Buscando anuncios en Bloque (BDV)...")
                 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="header-center">📊 PERFIL DE VOLUMEN (VES/USDT)</div>', unsafe_allow_html=True)
-        mercado_c_vol = obtener_mercado_publico("BUY", filtro_c)
-        mercado_v_vol = obtener_mercado_publico("SELL", filtro_v)
+        mercado_c_vol = obtener_mercado_publico("BUY", filtro_c, is_block=es_bloque)
+        mercado_v_vol = obtener_mercado_publico("SELL", filtro_v, is_block=False)
         fig = go.Figure()
         if mercado_c_vol:
             precios_c = [float(x['adv']['price']) for x in mercado_c_vol]
@@ -201,8 +203,8 @@ with col_centro:
     
     @st.fragment(run_every=timedelta(seconds=4))
     def render_spread_live():
-        m_c = obtener_mercado_publico("BUY", filtro_c)
-        m_v = obtener_mercado_publico("SELL", filtro_v)
+        m_c = obtener_mercado_publico("BUY", filtro_c, is_block=es_bloque)
+        m_v = obtener_mercado_publico("SELL", filtro_v, is_block=False)
         p_c = float(m_c[0]['adv']['price']) if m_c else 0.0
         p_v = float(m_v[0]['adv']['price']) if m_v else 0.0
         spread_val = p_c - p_v if (p_c and p_v) else 0.0
@@ -269,7 +271,7 @@ with col_centro:
 
 with col_venta:
     st.markdown('<div class="header-venta">VENTA</div>', unsafe_allow_html=True)
-    st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>BDV | TRANSF</b></span><span style="color: #f6465d; font-weight: bold;">{str_filtro_v} VES</span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>PM | BDV | TRANSF</b></span><span style="color: #f6465d; font-weight: bold;">{str_filtro_v}</span></div>', unsafe_allow_html=True)
     
     @st.fragment(run_every=timedelta(seconds=4))
     def render_seccion_venta():
@@ -286,7 +288,7 @@ with col_venta:
             html_v += '</table>'
             st.markdown(html_v, unsafe_allow_html=True)
         else:
-            mercado_v = obtener_mercado_publico("SELL", filtro_v)
+            mercado_v = obtener_mercado_publico("SELL", filtro_v, is_block=False)
             if mercado_v:
                 html_v = '<table class="p2p-table"><tr><th>#</th><th>PRECIO</th><th>DISP</th><th>USUARIO</th></tr>'
                 for idx, item in enumerate(mercado_v, 1): 
@@ -297,7 +299,7 @@ with col_venta:
                 html_v += '</table>'
                 st.markdown(html_v, unsafe_allow_html=True)
             else: 
-                st.info("Buscando anuncios... (Puede que no haya comerciantes online con esos filtros)")
+                st.info("Buscando anuncios...")
             
         st.markdown("<br>", unsafe_allow_html=True)
         ordenes_activas, error_ordenes = obtener_ordenes_activas(api_key_input, secret_key_input)
