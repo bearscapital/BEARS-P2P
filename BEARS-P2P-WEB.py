@@ -65,7 +65,7 @@ elif opcion_filtro == "Perfil C (C: 70k | V: 70k)":
 else: 
     filtro_c, filtro_v = "bloque", 1000000
 
-str_filtro_c = "BLOQUE" if filtro_c == "bloque" else f"{filtro_c:,}".replace(',', '.')
+str_filtro_c = "BLOQUE (Todos los Bancos)" if filtro_c == "bloque" else f"{filtro_c:,}".replace(',', '.')
 str_filtro_v = f"{filtro_v:,}".replace(',', '.')
 
 def realizar_peticion_firmada(endpoint, params, api_key, secret_key):
@@ -122,17 +122,18 @@ def obtener_mercado_publico(trade_type, trans_amount):
         "asset": "USDT", 
         "countries": [], 
         "proMerchantAds": False, 
-        "shieldMerchantAds": False, 
-        "payTypes": ["BancodeVenezuela", "BankTransferVenezuela"] 
+        "shieldMerchantAds": False
     }
     
-    # Lógica condicional: Si es bloque, modificamos los parámetros para que Binance no falle
+    # NUEVA LÓGICA: Si es bloque, quitamos el filtro de bancos y exigimos que sea Zona Block
     if trans_amount == "bloque":
         filtros["tradeZone"] = "block"
-        filtros["publisherType"] = None 
+        filtros["publisherType"] = None
+        filtros["payTypes"] = [] # Dejamos todos los bancos abiertos
     else:
         filtros["publisherType"] = "merchant"
         filtros["transAmount"] = str(trans_amount)
+        filtros["payTypes"] = ["BancodeVenezuela", "BankTransferVenezuela"]
         
     try:
         res = requests.post(url, json=filtros, headers={'Content-Type': 'application/json'}, timeout=4)
@@ -147,7 +148,7 @@ col_compra, col_centro, col_venta = st.columns([1.2, 1, 1.2])
 
 with col_compra:
     st.markdown('<div class="header-compra">COMPRA</div>', unsafe_allow_html=True)
-    st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>PM | BDV | TRANSF</b></span><span style="color: #0ecb81; font-weight: bold;">{str_filtro_c} VES</span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>{ "TODOS LOS BANCOS" if filtro_c == "bloque" else "PM | BDV | TRANSF" }</b></span><span style="color: #0ecb81; font-weight: bold;">{str_filtro_c}</span></div>', unsafe_allow_html=True)
     
     @st.fragment(run_every=timedelta(seconds=4))
     def render_seccion_compra():
@@ -175,7 +176,7 @@ with col_compra:
                 html_c += '</table>'
                 st.markdown(html_c, unsafe_allow_html=True)
             else: 
-                st.info("Cargando mercado de compra...")
+                st.info("Buscando anuncios... (Puede que no haya comerciantes online con esos filtros)")
                 
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="header-center">📊 PERFIL DE VOLUMEN (VES/USDT)</div>', unsafe_allow_html=True)
@@ -296,7 +297,7 @@ with col_venta:
                 html_v += '</table>'
                 st.markdown(html_v, unsafe_allow_html=True)
             else: 
-                st.info("Cargando mercado de venta...")
+                st.info("Buscando anuncios... (Puede que no haya comerciantes online con esos filtros)")
             
         st.markdown("<br>", unsafe_allow_html=True)
         ordenes_activas, error_ordenes = obtener_ordenes_activas(api_key_input, secret_key_input)
