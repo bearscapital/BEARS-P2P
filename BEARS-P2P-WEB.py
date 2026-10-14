@@ -1,8 +1,114 @@
+import streamlit as st
+import requests
+import pandas as pd
+import time
+import hmac
+import hashlib
+from urllib.parse import urlencode
+from datetime import datetime, timedelta
+import plotly.graph_objects as go
+
+st.set_page_config(page_title="BEARS Terminal P2P", page_icon="⚡", layout="wide")
+
+st.markdown("""
+    <style>
+    .stApp { background-color: #0b0e14; color: #ffffff; }
+    [data-stale="true"] { opacity: 1 !important; filter: none !important; pointer-events: auto !important; transition: none !important; }
+    div[data-testid="stFragment"] { opacity: 1 !important; }
+    .card-box { background-color: #12161f; border: 1px solid #21262d; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+    .header-compra { color: #0ecb81; font-weight: bold; font-size: 15px; border-bottom: 2px solid #0ecb81; padding-bottom: 4px; margin-bottom: 8px; }
+    .header-venta { color: #f6465d; font-weight: bold; font-size: 15px; border-bottom: 2px solid #f6465d; padding-bottom: 4px; margin-bottom: 8px; }
+    .header-center { color: #f0b90b; font-weight: bold; font-size: 15px; border-bottom: 2px solid #f0b90b; padding-bottom: 4px; margin-bottom: 8px; }
+    .p2p-table { width: 100%; border-collapse: collapse; font-size: 12px; background-color: #12161f; border-radius: 6px; overflow: hidden; }
+    .p2p-table th { background-color: #161a23; color: #848e9c; padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; }
+    .p2p-table td { padding: 6px 8px; border-bottom: 1px solid #1a1f2c; color: #eaecef; }
+    .p2p-table tr:last-child td { border-bottom: none; }
+    </style>
+""", unsafe_allow_html=True)
+
+if 'ganancia_sesion' not in st.session_state:
+    st.session_state.ganancia_sesion = 0.0
+    st.session_state.ciclos = 0
+
+def sincronizar_tiempo_binance():
+    try:
+        res = requests.get('https://api.binance.com/api/v3/time', timeout=3)
+        st.session_state.time_offset = res.json()['serverTime'] - int(time.time() * 1000)
+    except:
+        st.session_state.time_offset = 0
+
+if 'time_offset' not in st.session_state:
+    sincronizar_tiempo_binance()
+
+st.sidebar.title("⚙️ Configuración")
+with st.sidebar.expander("🔑 Credenciales API (Merchant)", expanded=False):
+    api_key_input = st.text_input("API Key", type="password", value="")
+    secret_key_input = st.text_input("Secret Key", type="password", value="")
+
+capital_trabajo = st.sidebar.number_input("Capital de Trabajo (USDT)", value=400.0, step=50.0)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎚️ Filtros de Mercado")
+opcion_filtro = st.sidebar.radio("Selecciona los montos a escanear:", (
+    "Perfil A (C: 70k | V: 20k)", 
+    "Perfil B (C: 20k | V: 10k)", 
+    "Perfil C (C: 70k | V: 70k)",
+    "Perfil D (C: Bloque | V: 1 Millón)"
+))
+
+if opcion_filtro == "Perfil A (C: 70k | V: 20k)": filtro_c, filtro_v = 70000, 20000
+elif opcion_filtro == "Perfil B (C: 20k | V: 10k)": filtro_c, filtro_v = 20000, 10000
+elif opcion_filtro == "Perfil C (C: 70k | V: 70k)": filtro_c, filtro_v = 70000, 70000
+else: filtro_c, filtro_v = "bloque", 1000000
+
+str_filtro_c = "BLOQUE" if filtro_c == "bloque" else f"{filtro_c:,}".replace(',', '.')
+str_filtro_v = f"{filtro_v:,}".replace(',', '.')
+
+def realizar_peticion_firmada(endpoint, params, api_key, secret_key):
+    url = 'https://api.binance.com' + endpoint
+    for intento in range(2):
+        if 'signature' in params: del params['signature']
+        params['timestamp'] = int(time.time() * 1000) + st.session_state.get('time_offset', 0)
+        params['recvWindow'] = 60000
+        query_string = urlencode(params)
+        signature = hmac.new(secret_key.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+        params['signature'] = signature
+        headers = {'X-MBX-APIKEY': api_key}
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=4)
+            data = res.json()
+            if str(data.get('code')) == '-1021':
+                sincronizar_tiempo_binance()
+                continue
+            return data, None
+        except Exception as e:
+            return None, str(e)
+    return None, "Error de sincronización"
+
+def obtener_mis_anuncios(api_key, secret_key):
+    if not api_key or not secret_key: return []
+    data, err = realizar_peticion_firmada('/sapi/v1/c2c/ads/list', {}, api_key, secret_key)
+    if data and data.get('code') == '000000': return data.get('data', [])
+    return []
+
+def obtener_ordenes_activas(api_key, secret_key):
+    if not api_key or not secret_key: return [], "Faltan credenciales"
+    ordenes_activas = []
+    estados_activos = ['PENDING', 'TRADING', 'BUYER_PAYED', 'DISTRIBUTING', 'IN_APPEAL', 'PAYING']
+    data, error = realizar_peticion_firmada('/sapi/v1/c2c/orderMatch/listUserOrderHistory', {'rows': 30}, api_key, secret_key)
+    if error: return [], error
+    if data and data.get('code') == '000000' and data.get('data'):
+        for order in data['data']:
+            if order.get('orderStatus') in estados_activos:
+                ordenes_activas.append(order)
+    elif data and str(data.get('code')) not in ['000000', '-1021']:
+        return [], f"Error Binance [{data.get('code')}]: {data.get('msg')}"
+    return ordenes_activas, None
+
 @st.cache_data(ttl=3)
 def obtener_mercado_publico(trade_type, trans_amount):
     url = 'https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search'
     
-    # Payload base
     filtros = { 
         "fiat": "VES", 
         "page": 1, 
@@ -16,9 +122,8 @@ def obtener_mercado_publico(trade_type, trans_amount):
         "payTypes": ["BancodeVenezuela", "BankTransferVenezuela"] 
     }
     
-    # Lógica para manejar el filtro de "Bloque" o monto normal
     if trans_amount == "bloque":
-        filtros["tradeZone"] = "block" # Parámetro que suele usar Binance para P2P en Bloque
+        filtros["tradeZone"] = "block"
         filtros["transAmount"] = ""
     else:
         filtros["transAmount"] = str(trans_amount)
@@ -26,5 +131,21 @@ def obtener_mercado_publico(trade_type, trans_amount):
     try:
         res = requests.post(url, json=filtros, headers={'Content-Type': 'application/json'}, timeout=4)
         return res.json().get('data', [])
-    except: 
-        return []
+    except: return []
+
+st.title("⚡ BEARS Terminal P2P")
+st.markdown("---")
+
+col_compra, col_centro, col_venta = st.columns([1.2, 1, 1.2])
+
+with col_compra:
+    st.markdown('<div class="header-compra">COMPRA</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>PM | BDV | TRANSF</b></span><span style="color: #0ecb81; font-weight: bold;">{str_filtro_c} VES</span></div>', unsafe_allow_html=True)
+    
+    @st.fragment(run_every=timedelta(seconds=4))
+    def render_seccion_compra():
+        mis_anuncios = obtener_mis_anuncios(api_key_input, secret_key_input)
+        anuncios_compra = [ad for ad in mis_anuncios if ad.get('tradeType') == 'BUY']
+        if anuncios_compra:
+            html_c = '<table class="p2p-table"><tr><th>NRO</th><th>PRECIO</th><th>DISP</th><th>ESTADO</th></tr>'
+            for ad in anuncios_compra: html_c += f"<tr><td>{str(ad.get('adNo'))[-6:]}</td><td>{float(ad.get('price', 0)):,.3f}</td><td>{float
