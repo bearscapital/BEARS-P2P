@@ -1,794 +1,471 @@
+import streamlit as st
+import requests
+import pandas as pd
 import time
 import hmac
 import hashlib
 from urllib.parse import urlencode
-import requests
-import pandas as pd
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
-import streamlit as st
 
-# ==============================================================================
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILO OSCURO PROFESIONAL (BEARS TERMINAL P2P)
-# ==============================================================================
-st.set_page_config(
-    page_title="BEARS Terminal P2P",
-    page_icon="🐻",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="BEARS Terminal P2P", page_icon="⚡", layout="wide")
 
-st.markdown(
-    """
+st.markdown("""
     <style>
-    /* Fondo principal y contenedores oscuros */
-    .stApp {
-        background-color: #0b0e14;
-        color: #e6edf3;
-    }
-    section[data-testid="stSidebar"] {
-        background-color: #11151f;
-        border-right: 1px solid #1e2433;
-    }
-    /* Tarjetas de métricas KPI */
-    div[data-testid="stMetric"] {
-        background-color: #131824;
-        border: 1px solid #22293a;
-        border-radius: 10px;
-        padding: 14px 18px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-    }
-    div[data-testid="stMetricLabel"] {
-        color: #8b949e !important;
-        font-size: 0.85rem !important;
-        font-weight: 600 !important;
-    }
-    div[data-testid="stMetricValue"] {
-        color: #f0f6fc !important;
-        font-size: 1.55rem !important;
-        font-weight: 700 !important;
-    }
-    /* Botones de perfiles rápidos */
-    div.stButton > button {
-        background-color: #161c2a;
-        color: #e6edf3;
-        border: 1px solid #2a3347;
-        border-radius: 8px;
-        font-weight: 600;
-        transition: all 0.2s ease;
-    }
-    div.stButton > button:hover {
-        border-color: #f0b90b;
-        color: #f0b90b;
-        background-color: #1c2436;
-    }
-    /* Pestañas principales */
-    button[data-baseweb="tab"] {
-        font-size: 1rem !important;
-        font-weight: 700 !important;
-        padding: 10px 20px !important;
-    }
-    /* Expanders */
-    div[data-testid="stExpander"] {
-        background-color: #131824;
-        border: 1px solid #22293a;
-        border-radius: 10px;
-    }
+    .stApp { background-color: #0b0e14; color: #ffffff; }
+    [data-stale="true"] { opacity: 1 !important; filter: none !important; pointer-events: auto !important; transition: none !important; }
+    div[data-testid="stFragment"] { opacity: 1 !important; }
+    .card-box { background-color: #12161f; border: 1px solid #21262d; border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+    .header-compra { color: #0ecb81; font-weight: bold; font-size: 15px; border-bottom: 2px solid #0ecb81; padding-bottom: 4px; margin-bottom: 8px; }
+    .header-venta { color: #f6465d; font-weight: bold; font-size: 15px; border-bottom: 2px solid #f6465d; padding-bottom: 4px; margin-bottom: 8px; }
+    .header-center { color: #f0b90b; font-weight: bold; font-size: 15px; border-bottom: 2px solid #f0b90b; padding-bottom: 4px; margin-bottom: 8px; }
+    .p2p-table { width: 100%; border-collapse: collapse; font-size: 12px; background-color: #12161f; border-radius: 6px; overflow: hidden; }
+    .p2p-table th { background-color: #161a23; color: #848e9c; padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; }
+    .p2p-table td { padding: 6px 8px; border-bottom: 1px solid #1a1f2c; color: #eaecef; }
+    .p2p-table tr:last-child td { border-bottom: none; }
     </style>
-    """,
-    unsafe_allow_html=True,
+""", unsafe_allow_html=True)
+
+if 'ganancia_sesion' not in st.session_state:
+    st.session_state.ganancia_sesion = 0.0
+    st.session_state.ciclos = 0
+
+if 'ganancia_sesion_eur' not in st.session_state:
+    st.session_state.ganancia_sesion_eur = 0.0
+    st.session_state.ciclos_eur = 0
+
+def sincronizar_tiempo_binance():
+    try:
+        res = requests.get('https://api.binance.com/api/v3/time', timeout=3)
+        st.session_state.time_offset = res.json()['serverTime'] - int(time.time() * 1000)
+    except:
+        st.session_state.time_offset = 0
+
+if 'time_offset' not in st.session_state:
+    sincronizar_tiempo_binance()
+
+st.sidebar.title("⚙️ Configuración")
+with st.sidebar.expander("🔑 Credenciales API (Merchant)", expanded=False):
+    api_key_input = st.text_input("API Key", type="password", value="")
+    secret_key_input = st.text_input("Secret Key", type="password", value="")
+
+capital_trabajo = st.sidebar.number_input("Capital de Trabajo (USDT)", value=400.0, step=50.0)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎚️ Filtros de Mercado (USDT-B)")
+opcion_filtro = st.sidebar.radio("Selecciona los montos a escanear:", (
+    "Perfil A (C: 70k | V: 20k)", 
+    "Perfil B (C: 20k | V: 10k)", 
+    "Perfil C (C: 70k | V: 70k)",
+    "Perfil D (C: Bloque 37M | V: 1 Millón)"
+))
+
+if opcion_filtro == "Perfil A (C: 70k | V: 20k)": 
+    filtro_c, filtro_v = 70000, 20000
+elif opcion_filtro == "Perfil B (C: 20k | V: 10k)": 
+    filtro_c, filtro_v = 20000, 10000
+elif opcion_filtro == "Perfil C (C: 70k | V: 70k)": 
+    filtro_c, filtro_v = 70000, 70000
+else: 
+    filtro_c, filtro_v = 37000000, 1000000
+
+es_bloque = opcion_filtro.startswith("Perfil D")
+
+str_filtro_c = f"BLOQUE ({filtro_c:,} VES)".replace(',', '.') if es_bloque else f"{filtro_c:,} VES".replace(',', '.')
+str_filtro_v = f"{filtro_v:,} VES".replace(',', '.')
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🇪🇺 Filtros de Mercado (EUR/USDT)")
+opcion_filtro_eur = st.sidebar.radio("Selecciona los montos EUR a escanear:", (
+    "Perfil 1 (C: 500 € | V: 500 €)",
+    "Perfil 2 (C: 1.000 € | V: 200 €)",
+    "Perfil 3 (C: 1.000 € | V: 5.000 €)",
+    "Perfil 4 (C: 200 € | V: 100 €)",
+    "Perfil 5 (C: 200 € | V: 500 €)",
+    "Perfil 6 (C: 500 € | V: 100 €)"
+))
+
+if opcion_filtro_eur == "Perfil 1 (C: 500 € | V: 500 €)":
+    filtro_c_eur, filtro_v_eur = 500, 500
+elif opcion_filtro_eur == "Perfil 2 (C: 1.000 € | V: 200 €)":
+    filtro_c_eur, filtro_v_eur = 1000, 200
+elif opcion_filtro_eur == "Perfil 3 (C: 1.000 € | V: 5.000 €)":
+    filtro_c_eur, filtro_v_eur = 1000, 5000
+elif opcion_filtro_eur == "Perfil 4 (C: 200 € | V: 100 €)":
+    filtro_c_eur, filtro_v_eur = 200, 100
+elif opcion_filtro_eur == "Perfil 5 (C: 200 € | V: 500 €)":
+    filtro_c_eur, filtro_v_eur = 200, 500
+else:
+    filtro_c_eur, filtro_v_eur = 500, 100
+
+metodos_eur_sel = st.sidebar.multiselect(
+    "Métodos de Pago EUR:",
+    ["Bizum", "SEPAinstant", "SEPA", "Revolut", "Wise"],
+    default=["Bizum", "SEPAinstant"]
 )
 
-# ==============================================================================
-# 2. INICIALIZACIÓN DE ESTADOS (SEPARADOS POR MERCADO PARA EVITAR COLISIONES)
-# ==============================================================================
-DEFAULT_STATES = {
-    # Estados USDT-B (VES)
-    "ves_monto_compra": 1000000,
-    "ves_monto_venta": 1000000,
-    # Estados EURO-USDT (EUR)
-    "eur_monto_compra": 500,
-    "eur_monto_venta": 500,
-    # Credenciales opcionales
-    "binance_api_key": "",
-    "binance_api_secret": "",
-}
+str_filtro_c_eur = f"{filtro_c_eur:,} EUR".replace(',', '.')
+str_filtro_v_eur = f"{filtro_v_eur:,} EUR".replace(',', '.')
+header_bancos_eur = " | ".join(metodos_eur_sel).upper() if metodos_eur_sel else "TODOS LOS MÉTODOS EUR"
 
-for k, v in DEFAULT_STATES.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+def realizar_peticion_firmada(endpoint, params, api_key, secret_key):
+    url = 'https://api.binance.com' + endpoint
+    for intento in range(2):
+        if 'signature' in params: del params['signature']
+        params['timestamp'] = int(time.time() * 1000) + st.session_state.get('time_offset', 0)
+        params['recvWindow'] = 60000
+        query_string = urlencode(params)
+        signature = hmac.new(secret_key.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
+        params['signature'] = signature
+        headers = {'X-MBX-APIKEY': api_key}
+        try:
+            res = requests.get(url, headers=headers, params=params, timeout=4)
+            data = res.json()
+            if str(data.get('code')) == '-1021':
+                sincronizar_tiempo_binance()
+                continue
+            return data, None
+        except Exception as e:
+            return None, str(e)
+    return None, "Error de sincronización"
 
+def obtener_mis_anuncios(api_key, secret_key):
+    if not api_key or not secret_key: return []
+    data, err = realizar_peticion_firmada('/sapi/v1/c2c/ads/list', {}, api_key, secret_key)
+    if data and data.get('code') == '000000': return data.get('data', [])
+    return []
 
-# ==============================================================================
-# 3. CONECTORES API BINANCE (P2P BOOK, SPOT REFERENCE & SINCRONIZACIÓN DE RELOJ)
-# ==============================================================================
-@st.cache_data(ttl=30)
-def check_binance_server_sync() -> tuple[bool, int]:
-    """Verifica sincronización de tiempo con servidores de Binance."""
+def obtener_ordenes_activas(api_key, secret_key):
+    if not api_key or not secret_key: return [], "Faltan credenciales"
+    ordenes_activas = []
+    estados_activos = ['PENDING', 'TRADING', 'BUYER_PAYED', 'DISTRIBUTING', 'IN_APPEAL', 'PAYING']
+    data, error = realizar_peticion_firmada('/sapi/v1/c2c/orderMatch/listUserOrderHistory', {'rows': 30}, api_key, secret_key)
+    if error: return [], error
+    if data and data.get('code') == '000000' and data.get('data'):
+        for order in data['data']:
+            if order.get('orderStatus') in estados_activos:
+                ordenes_activas.append(order)
+    elif data and str(data.get('code')) not in ['000000', '-1021']:
+        return [], f"Error Binance [{data.get('code')}]: {data.get('msg')}"
+    return ordenes_activas, None
+
+@st.cache_data(ttl=3)
+def obtener_mercado_publico(trade_type, trans_amount, is_block=False):
+    url = 'https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search'
+    
+    filtros = { 
+        "fiat": "VES", 
+        "page": 1, 
+        "rows": 5, 
+        "tradeType": trade_type, 
+        "asset": "USDT", 
+        "countries": [], 
+        "proMerchantAds": False, 
+        "shieldMerchantAds": False,
+        "transAmount": str(trans_amount)
+    }
+    
+    # LÓGICA ESTRICTA DE BLOQUE Y BDV
+    if is_block and trade_type == "BUY":
+        filtros["tradeZone"] = "block"
+        filtros["publisherType"] = None 
+        filtros["payTypes"] = ["BancodeVenezuela"]
+    else:
+        filtros["publisherType"] = "merchant"
+        filtros["payTypes"] = ["BancodeVenezuela", "BankTransferVenezuela"]
+        
     try:
-        t0 = int(time.time() * 1000)
-        r = requests.get("https://api.binance.com/api/v3/time", timeout=5)
-        t1 = int(time.time() * 1000)
-        server_time = int(r.json()["serverTime"])
-        local_mid = (t0 + t1) // 2
-        offset_ms = server_time - local_mid
-        return True, offset_ms
-    except Exception:
-        return False, 0
+        res = requests.post(url, json=filtros, headers={'Content-Type': 'application/json'}, timeout=4)
+        return res.json().get('data', [])
+    except: 
+        return []
 
-
-@st.cache_data(ttl=10)
-def get_spot_eur_usdt() -> float | None:
-    """Obtiene el valor de 1 USDT en EUR usando el par Spot EURUSDT de Binance."""
-    try:
-        r = requests.get(
-            "https://api.binance.com/api/v3/ticker/price",
-            params={"symbol": "EURUSDT"},
-            timeout=5,
-        )
-        eur_in_usdt = float(r.json()["price"])
-        return round(1.0 / eur_in_usdt, 4) if eur_in_usdt > 0 else None
-    except Exception:
-        return None
-
-
-def fetch_p2p_orderbook(
-    fiat: str,
-    trade_type: str,
-    trans_amount: float = 0,
-    pay_types: list[str] | None = None,
-    verified_only: bool = True,
-    min_finish_rate: float = 85.0,
-    min_orders: int = 10,
-    rows: int = 15,
-) -> pd.DataFrame:
-    """
-    Consulta el libro P2P de Binance en tiempo real.
-    trade_type:
-      - 'BUY'  -> Anuncios donde tú COMPRAS USDT (precio Ask)
-      - 'SELL' -> Anuncios donde tú VENDES USDT (precio Bid)
-    """
-    url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-    payload = {
-        "fiat": fiat,
+@st.cache_data(ttl=3)
+def obtener_mercado_publico_eur(trade_type, trans_amount, pay_types):
+    url = 'https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search'
+    
+    filtros = {
+        "fiat": "EUR",
         "page": 1,
-        "rows": rows,
+        "rows": 5,
         "tradeType": trade_type,
         "asset": "USDT",
         "countries": [],
         "proMerchantAds": False,
         "shieldMerchantAds": False,
-        "filterType": "all",
-        "periods": [],
-        "additionalKycVerifyFilter": 0,
-        "publisherType": "merchant" if verified_only else None,
-        "payTypes": pay_types or [],
-        "classifies": ["mass", "profession", "fiat_trade"],
+        "publisherType": "merchant",
+        "payTypes": pay_types,
+        "transAmount": str(trans_amount)
     }
-    if trans_amount and trans_amount > 0:
-        payload["transAmount"] = trans_amount
-
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    }
-
+    
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=8)
-        resp.raise_for_status()
-        raw_data = resp.json().get("data", [])
-    except Exception:
-        return pd.DataFrame()
+        res = requests.post(url, json=filtros, headers={'Content-Type': 'application/json'}, timeout=4)
+        return res.json().get('data', [])
+    except:
+        return []
 
-    rows_parsed = []
-    for entry in raw_data:
-        adv = entry.get("adv", {})
-        adv_user = entry.get("advertiser", {})
+st.title("⚡ BEARS Terminal P2P")
 
-        finish_rate = round(float(adv_user.get("monthFinishRate", 0)) * 100, 1)
-        order_count = int(adv_user.get("monthOrderCount", 0))
+tab_ves, tab_eur = st.tabs(["🇻🇪 USDT-B", "🇪🇺 EUR/USDT"])
 
-        if finish_rate < min_finish_rate or order_count < min_orders:
-            continue
+# ==============================================================================
+# PESTAÑA 1: CÓDIGO ORIGINAL INTACTO (USDT-B)
+# ==============================================================================
+with tab_ves:
+    st.markdown("---")
 
-        methods = [
-            m.get("identifier", m.get("tradeMethodName", ""))
-            for m in adv.get("tradeMethods", [])
-        ]
+    col_compra, col_centro, col_venta = st.columns([1.2, 1, 1.2])
 
-        rows_parsed.append(
-            {
-                "Comerciante": adv_user.get("nickName", "N/D"),
-                "Precio": float(adv.get("price", 0)),
-                "Disponible (USDT)": float(adv.get("surplusAmount", 0)),
-                "Mínimo": float(adv.get("minSingleTransAmount", 0)),
-                "Máximo": float(adv.get("dynamicMaxSingleTransAmount", 0)),
-                "Órdenes (30d)": order_count,
-                "Tasa (%)": finish_rate,
-                "Métodos": ", ".join(methods),
-            }
-        )
+    with col_compra:
+        st.markdown('<div class="header-compra">COMPRA</div>', unsafe_allow_html=True)
+        header_bancos_c = "SOLO BDV" if es_bloque else "PM | BDV | TRANSF"
+        st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>{header_bancos_c}</b></span><span style="color: #0ecb81; font-weight: bold;">{str_filtro_c}</span></div>', unsafe_allow_html=True)
+        
+        @st.fragment(run_every=timedelta(seconds=4))
+        def render_seccion_compra():
+            mis_anuncios = obtener_mis_anuncios(api_key_input, secret_key_input)
+            anuncios_compra = [ad for ad in mis_anuncios if ad.get('tradeType') == 'BUY']
+            if anuncios_compra:
+                html_c = '<table class="p2p-table"><tr><th>NRO</th><th>PRECIO</th><th>DISP</th><th>ESTADO</th></tr>'
+                for ad in anuncios_compra: 
+                    ad_no = str(ad.get('adNo'))[-6:]
+                    price = float(ad.get('price', 0))
+                    disp = float(ad.get('surplusAmount', 0))
+                    status = ad.get('advStatus')
+                    html_c += f"<tr><td>{ad_no}</td><td>{price:,.3f}</td><td>{disp:,.1f}</td><td>{status}</td></tr>"
+                html_c += '</table>'
+                st.markdown(html_c, unsafe_allow_html=True)
+            else:
+                mercado_c = obtener_mercado_publico("BUY", filtro_c, is_block=es_bloque)
+                if mercado_c:
+                    html_c = '<table class="p2p-table"><tr><th>#</th><th>PRECIO</th><th>DISP</th><th>USUARIO</th></tr>'
+                    for idx, item in enumerate(mercado_c, 1): 
+                        price = float(item['adv']['price'])
+                        disp = float(item['adv']['surplusAmount'])
+                        user = item['advertiser']['nickName'][:12]
+                        html_c += f"<tr><td>#{idx}</td><td>{price:,.3f}</td><td>{disp:.1f}</td><td>{user}</td></tr>"
+                    html_c += '</table>'
+                    st.markdown(html_c, unsafe_allow_html=True)
+                else: 
+                    st.info("Buscando anuncios en Bloque (BDV)...")
+                    
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="header-center">📊 PERFIL DE VOLUMEN (VES/USDT)</div>', unsafe_allow_html=True)
+            mercado_c_vol = obtener_mercado_publico("BUY", filtro_c, is_block=es_bloque)
+            mercado_v_vol = obtener_mercado_publico("SELL", filtro_v, is_block=False)
+            fig = go.Figure()
+            if mercado_c_vol:
+                precios_c = [float(x['adv']['price']) for x in mercado_c_vol]
+                vol_c = [float(x['adv']['surplusAmount']) for x in mercado_c_vol]
+                fig.add_trace(go.Bar(x=precios_c, y=vol_c, name='Órdenes de Compra', marker_color='#0ecb81', opacity=0.85, width=0.25))
+            if mercado_v_vol:
+                precios_v = [float(x['adv']['price']) for x in mercado_v_vol]
+                vol_v = [float(x['adv']['surplusAmount']) for x in mercado_v_vol]
+                fig.add_trace(go.Bar(x=precios_v, y=vol_v, name='Órdenes de Venta', marker_color='#f6465d', opacity=0.85, width=0.25))
+            
+            fig.update_layout(paper_bgcolor='#12161f', plot_bgcolor='#12161f', font_color='#848e9c', margin=dict(l=10, r=10, t=10, b=10), height=280, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)), xaxis=dict(title="Precio de la Tasa (VES)", dtick=2, tickformat=".1f"), yaxis_title="Volumen Disponible", barmode='group')
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        render_seccion_compra()
 
-    return pd.DataFrame(rows_parsed)
+    with col_centro:
+        st.markdown('<div class="header-center">PANEL DE CONTROL & CÁLCULO</div>', unsafe_allow_html=True)
+        
+        @st.fragment(run_every=timedelta(seconds=4))
+        def render_spread_live():
+            m_c = obtener_mercado_publico("BUY", filtro_c, is_block=es_bloque)
+            m_v = obtener_mercado_publico("SELL", filtro_v, is_block=False)
+            p_c = float(m_c[0]['adv']['price']) if m_c else 0.0
+            p_v = float(m_v[0]['adv']['price']) if m_v else 0.0
+            spread_val = p_c - p_v if (p_c and p_v) else 0.0
+            prof_pct = (spread_val / p_v * 100) if p_v > 0 else 0.0
+            
+            html_spread = f"""
+            <div class="card-box" style="text-align: center;">
+                <div style="color: #848e9c; font-size: 12px; font-weight: bold;">SPREAD ACTUAL (VES)</div>
+                <div style="font-size: 30px; font-weight: bold; color: #f0b90b; margin: 3px 0;">{spread_val:.2f}</div>
+                <div style="color: #0ecb81; font-weight: bold; font-size: 13px;">Profit +{prof_pct:.2f}%</div>
+                <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; font-weight: bold;">
+                    <span style="color: #0ecb81;">Compra: {p_c:.3f}</span>
+                    <span style="color: #f6465d;">Venta: {p_v:.3f}</span>
+                </div>
+            </div>
+            """
+            st.markdown(html_spread, unsafe_allow_html=True)
+            st.session_state['p_compra_live'], st.session_state['p_venta_live'] = p_c, p_v
+        render_spread_live()
+        
+        st.markdown('<div class="header-center">🧮 SIMULADOR DE OPERACIÓN</div>', unsafe_allow_html=True)
+        with st.container():
+            if st.button("🔄 Cargar Tasas en Vivo", use_container_width=True):
+                st.session_state['calc_sr'] = float(st.session_state.get('p_compra_live', 40.0))
+                st.session_state['calc_br'] = float(st.session_state.get('p_venta_live', 39.0))
+            vip_nivel = st.selectbox("Nivel VIP (Comisión)", ["Sin verificar (0.25%)", "Bronce (-20%)", "Plata (-30%)", "Oro (-50%)"])
+            desc = 0.0 if "Sin" in vip_nivel else (0.20 if "Bronce" in vip_nivel else (0.30 if "Plata" in vip_nivel else 0.50))
+            active_fee_rate = 0.0025 * (1 - desc)
+            
+            c_in1, c_in2 = st.columns(2)
+            with c_in1: calc_usdt = st.number_input("USDT a operar", value=capital_trabajo, step=50.0)
+            with c_in2: calc_sell_rate = st.number_input("Tasa Venta", step=0.1, format="%.3f", key="calc_sr")
+            calc_buy_rate = st.number_input("Tasa Compra", step=0.1, format="%.3f", key="calc_br")
+            
+            fiat_recibido = calc_usdt * calc_sell_rate
+            usdt_recuperados = fiat_recibido / calc_buy_rate if calc_buy_rate > 0 else 0
+            gross_profit = usdt_recuperados - calc_usdt
+            total_fee = (calc_usdt * active_fee_rate) + (usdt_recuperados * active_fee_rate)
+            net_profit_calc = gross_profit - total_fee
+            
+            html_sim = f"""
+            <div style="font-size: 11px; color: #848e9c; margin-top: 6px; display: flex; justify-content: space-between;">
+                <span>Bruta: <b style="color: #eaecef;">{gross_profit:.2f} USDT</b></span>
+                <span style="color: #f6465d;">Comisión: -{total_fee:.2f} USDT</span>
+            </div>
+            <div style="font-size: 14px; color: #2ebd85; margin-top: 4px; text-align: center; font-weight: bold;">
+                Ganancia Neta: +{net_profit_calc:.2f} USDT
+            </div>
+            """
+            st.markdown(html_sim, unsafe_allow_html=True)
+            
+        st.metric(label="GANANCIA ACUMULADA DE LA SESIÓN", value=f"{st.session_state.ganancia_sesion:.2f} USDT", delta=f"Ciclos: {st.session_state.ciclos}")
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            if st.button("➕ REGISTRAR", use_container_width=True):
+                st.session_state.ganancia_sesion += net_profit_calc
+                st.session_state.ciclos += 1
+                st.rerun()
+        with btn_col2:
+            if st.button("🗑️ REINICIAR", use_container_width=True):
+                st.session_state.ganancia_sesion = 0.0
+                st.session_state.ciclos = 0
+                st.rerun()
 
-
-def fetch_merchant_active_ads(api_key: str, api_secret: str) -> pd.DataFrame:
-    """Consulta opcional de anuncios propios si se configuran las API Keys en el sidebar."""
-    if not api_key or not api_secret:
-        return pd.DataFrame()
-    try:
-        ok, offset = check_binance_server_sync()
-        ts = int(time.time() * 1000) + (offset if ok else 0)
-        params = {"timestamp": ts, "recvWindow": 5000}
-        query_str = urlencode(params)
-        signature = hmac.new(
-            api_secret.encode("utf-8"),
-            query_str.encode("utf-8"),
-            hashlib.sha256,
-        ).hexdigest()
-        url = f"https://api.binance.com/sapi/v1/c2c/ads/listWithPagination?{query_str}&signature={signature}"
-        headers = {"X-MBX-APIKEY": api_key}
-        r = requests.post(url, json={"page": 1, "rows": 10}, headers=headers, timeout=6)
-        data = r.json().get("data", [])
-        if not data:
-            return pd.DataFrame()
-        return pd.DataFrame(
-            [
-                {
-                    "Adv No": d.get("advNo"),
-                    "Par": f"{d.get('asset')}/{d.get('fiatUnit')}",
-                    "Tipo": d.get("tradeType"),
-                    "Precio": float(d.get("price", 0)),
-                    "Disponible": float(d.get("surplusAmount", 0)),
-                    "Estado": "Activo" if d.get("advStatus") == 1 else "Pausado",
-                }
-                for d in data
-            ]
-        )
-    except Exception:
-        return pd.DataFrame()
+    with col_venta:
+        st.markdown('<div class="header-venta">VENTA</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>PM | BDV | TRANSF</b></span><span style="color: #f6465d; font-weight: bold;">{str_filtro_v}</span></div>', unsafe_allow_html=True)
+        
+        @st.fragment(run_every=timedelta(seconds=4))
+        def render_seccion_venta():
+            mis_anuncios = obtener_mis_anuncios(api_key_input, secret_key_input)
+            anuncios_venta = [ad for ad in mis_anuncios if ad.get('tradeType') == 'SELL']
+            if anuncios_venta:
+                html_v = '<table class="p2p-table"><tr><th>NRO</th><th>PRECIO</th><th>DISP</th><th>ESTADO</th></tr>'
+                for ad in anuncios_venta: 
+                    ad_no = str(ad.get('adNo'))[-6:]
+                    price = float(ad.get('price', 0))
+                    disp = float(ad.get('surplusAmount', 0))
+                    status = ad.get('advStatus')
+                    html_v += f"<tr><td>{ad_no}</td><td>{price:,.3f}</td><td>{disp:,.1f}</td><td>{status}</td></tr>"
+                html_v += '</table>'
+                st.markdown(html_v, unsafe_allow_html=True)
+            else:
+                mercado_v = obtener_mercado_publico("SELL", filtro_v, is_block=False)
+                if mercado_v:
+                    html_v = '<table class="p2p-table"><tr><th>#</th><th>PRECIO</th><th>DISP</th><th>USUARIO</th></tr>'
+                    for idx, item in enumerate(mercado_v, 1): 
+                        price = float(item['adv']['price'])
+                        disp = float(item['adv']['surplusAmount'])
+                        user = item['advertiser']['nickName'][:12]
+                        html_v += f"<tr><td>#{idx}</td><td>{price:,.3f}</td><td>{disp:.1f}</td><td>{user}</td></tr>"
+                    html_v += '</table>'
+                    st.markdown(html_v, unsafe_allow_html=True)
+                else: 
+                    st.info("Buscando anuncios...")
+                
+            st.markdown("<br>", unsafe_allow_html=True)
+            ordenes_activas, error_ordenes = obtener_ordenes_activas(api_key_input, secret_key_input)
+            total_usdt_activas = sum([float(o.get('amount', 0)) for o in ordenes_activas]) if ordenes_activas else 0.0
+            
+            header_ordenes = f"""
+            <div style="color: #f0b90b; font-weight: bold; font-size: 15px; border-bottom: 2px solid #f0b90b; padding-bottom: 4px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                <span>📋 MIS ÓRDENES ACTIVAS</span>
+                <span style="color: #eaecef; font-size: 12px; background: #161a23; padding: 2px 6px; border-radius: 4px;">Total: {total_usdt_activas:,.2f} USDT</span>
+            </div>
+            """
+            st.markdown(header_ordenes, unsafe_allow_html=True)
+            
+            if error_ordenes:
+                if error_ordenes == "Faltan credenciales": 
+                    st.markdown('<div style="text-align: center; color: #848e9c; font-size: 13px; padding: 10px; background: #12161f; border-radius: 4px;">Ingresa tus API Keys.</div>', unsafe_allow_html=True)
+                else: 
+                    st.error(error_ordenes)
+            elif ordenes_activas:
+                html_o = '<table class="p2p-table"><tr><th>TIPO</th><th>FIAT</th><th>USDT</th><th>ESTADO</th></tr>'
+                for o in ordenes_activas:
+                    is_buy = (o.get('tradeType') == 'BUY')
+                    tipo_color, tipo_str = ("#0ecb81", "COMPRA") if is_buy else ("#f6465d", "VENTA")
+                    fiat = float(o.get('totalPrice', 0))
+                    amount = float(o.get('amount', 0))
+                    status = o.get('orderStatus', '')
+                    html_o += f"<tr><td style='color: {tipo_color}; font-weight: bold;'>{tipo_str}</td><td>{fiat:,.2f} VES</td><td>{amount:,.2f}</td><td>{status}</td></tr>"
+                html_o += '</table>'
+                st.markdown(html_o, unsafe_allow_html=True)
+            else: 
+                st.markdown('<div style="text-align: center; color: #848e9c; font-size: 13px; padding: 10px; background: #12161f; border-radius: 4px;">No tienes órdenes activas en este momento.</div>', unsafe_allow_html=True)
+        render_seccion_venta()
 
 
 # ==============================================================================
-# 4. GRÁFICO DE PROFUNDIDAD / CURVA DE PRECIOS P2P (PLOTLY)
+# PESTAÑA 2: NUEVA SECCIÓN IDÉNTICA PARA EUR/USDT
 # ==============================================================================
-def build_depth_chart(df_buy: pd.DataFrame, df_sell: pd.DataFrame, currency_symbol: str, decimals: int):
-    fig = go.Figure()
+with tab_eur:
+    st.markdown("---")
 
-    if not df_buy.empty:
-        top_buy = df_buy.head(10).reset_index(drop=True)
-        fig.add_trace(
-            go.Scatter(
-                x=list(range(1, len(top_buy) + 1)),
-                y=top_buy["Precio"],
-                mode="lines+markers",
-                name="Compra USDT (Ask)",
-                line=dict(color="#00e676", width=2.5),
-                marker=dict(size=7),
-                hovertemplate=f"Posición #%{x}<br>Precio: %{y:.{decimals}f} {currency_symbol}<extra></extra>",
+    col_compra_eur, col_centro_eur, col_venta_eur = st.columns([1.2, 1, 1.2])
+
+    with col_compra_eur:
+        st.markdown('<div class="header-compra">COMPRA (EUR)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>{header_bancos_eur}</b></span><span style="color: #0ecb81; font-weight: bold;">{str_filtro_c_eur}</span></div>', unsafe_allow_html=True)
+        
+        @st.fragment(run_every=timedelta(seconds=4))
+        def render_seccion_compra_eur():
+            mis_anuncios = obtener_mis_anuncios(api_key_input, secret_key_input)
+            anuncios_compra_eur = [ad for ad in mis_anuncios if ad.get('tradeType') == 'BUY' and ad.get('fiatUnit') == 'EUR']
+            if anuncios_compra_eur:
+                html_c = '<table class="p2p-table"><tr><th>NRO</th><th>PRECIO</th><th>DISP</th><th>ESTADO</th></tr>'
+                for ad in anuncios_compra_eur:
+                    ad_no = str(ad.get('adNo'))[-6:]
+                    price = float(ad.get('price', 0))
+                    disp = float(ad.get('surplusAmount', 0))
+                    status = ad.get('advStatus')
+                    html_c += f"<tr><td>{ad_no}</td><td>{price:,.3f} €</td><td>{disp:,.1f}</td><td>{status}</td></tr>"
+                html_c += '</table>'
+                st.markdown(html_c, unsafe_allow_html=True)
+            else:
+                mercado_c_eur = obtener_mercado_publico_eur("BUY", filtro_c_eur, metodos_eur_sel)
+                if mercado_c_eur:
+                    html_c = '<table class="p2p-table"><tr><th>#</th><th>PRECIO</th><th>DISP</th><th>USUARIO</th></tr>'
+                    for idx, item in enumerate(mercado_c_eur, 1):
+                        price = float(item['adv']['price'])
+                        disp = float(item['adv']['surplusAmount'])
+                        user = item['advertiser']['nickName'][:12]
+                        html_c += f"<tr><td>#{idx}</td><td>{price:,.3f} €</td><td>{disp:.1f}</td><td>{user}</td></tr>"
+                    html_c += '</table>'
+                    st.markdown(html_c, unsafe_allow_html=True)
+                else:
+                    st.info("Buscando anuncios de compra EUR...")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown('<div class="header-center">📊 PERFIL DE VOLUMEN (EUR/USDT)</div>', unsafe_allow_html=True)
+            mercado_c_vol_eur = obtener_mercado_publico_eur("BUY", filtro_c_eur, metodos_eur_sel)
+            mercado_v_vol_eur = obtener_mercado_publico_eur("SELL", filtro_v_eur, metodos_eur_sel)
+            fig_eur = go.Figure()
+            if mercado_c_vol_eur:
+                precios_c_eur = [float(x['adv']['price']) for x in mercado_c_vol_eur]
+                vol_c_eur = [float(x['adv']['surplusAmount']) for x in mercado_c_vol_eur]
+                fig_eur.add_trace(go.Bar(x=precios_c_eur, y=vol_c_eur, name='Órdenes de Compra', marker_color='#0ecb81', opacity=0.85, width=0.0015))
+            if mercado_v_vol_eur:
+                precios_v_eur = [float(x['adv']['price']) for x in mercado_v_vol_eur]
+                vol_v_eur = [float(x['adv']['surplusAmount']) for x in mercado_v_vol_eur]
+                fig_eur.add_trace(go.Bar(x=precios_v_eur, y=vol_v_eur, name='Órdenes de Venta', marker_color='#f6465d', opacity=0.85, width=0.0015))
+
+            fig_eur.update_layout(
+                paper_bgcolor='#12161f',
+                plot_bgcolor='#12161f',
+                font_color='#848e9c',
+                margin=dict(l=10, r=10, t=10, b=10),
+                height=280,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+                xaxis=dict(title="Precio de la Tasa (EUR)", tickformat=".3f"),
+                yaxis_title="Volumen Disponible",
+                barmode='group'
             )
-        )
-
-    if not df_sell.empty:
-        top_sell = df_sell.head(10).reset_index(drop=True)
-        fig.add_trace(
-            go.Scatter(
-                x=list(range(1, len(top_sell) + 1)),
-                y=top_sell["Precio"],
-                mode="lines+markers",
-                name="Venta USDT (Bid)",
-                line=dict(color="#ff5252", width=2.5),
-                marker=dict(size=7),
-                hovertemplate=f"Posición #%{x}<br>Precio: %{y:.{decimals}f} {currency_symbol}<extra></extra>",
-            )
-        )
-
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#131824",
-        plot_bgcolor="#131824",
-        height=270,
-        margin=dict(l=20, r=20, t=35, b=20),
-        title=dict(text="Curva de Precios Top 10 Anunciantes", font=dict(size=14, color="#e6edf3")),
-        xaxis=dict(title="Posición en el Libro", gridcolor="#1f2636", dtick=1),
-        yaxis=dict(title=f"Tasa ({currency_symbol})", gridcolor="#1f2636"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    return fig
-
-
-# ==============================================================================
-# 5. BARRA LATERAL (CONFIGURACIÓN GLOBAL, AUTO-REFRESCO Y API KEYS)
-# ==============================================================================
-with st.sidebar:
-    st.markdown("## 🐻 BEARS Terminal P2P")
-    st.caption("Panel Profesional de Liquidez y Arbitraje")
-
-    # Estado de reloj con Binance
-    sync_ok, offset_ms = check_binance_server_sync()
-    if sync_ok:
-        st.success(f"🟢 Reloj Binance OK ({offset_ms:+d} ms)")
-    else:
-        st.warning("🟡 Sin respuesta de /api/v3/time")
-
-    st.divider()
-
-    # Control Anti-Pestañeo / Auto-Refresco
-    st.markdown("### ⚡ Monitoreo en Tiempo Real")
-    auto_refresh = st.toggle("Auto-Refresco Activo", value=True, key="global_auto_refresh")
-    refresh_seconds = st.selectbox(
-        "Intervalo de actualización (seg)",
-        options=[5, 10, 15, 30],
-        index=1,
-        disabled=not auto_refresh,
-        key="global_refresh_sec",
-    )
-    if st.button("🔄 Actualizar Libros Ahora", use_container_width=True):
-        st.cache_data.clear()
-
-    st.divider()
-
-    # Filtros globales de calidad
-    st.markdown("### 🛡️ Filtros de Contraparte")
-    solo_verificados = st.toggle("Solo Comerciantes Verificados", value=True, key="global_verified")
-    min_tasa = st.slider("Tasa mínima completado (%)", 50, 100, 90, step=5, key="global_min_rate")
-    min_ordenes = st.number_input("Órdenes mínimas (30d)", min_value=0, value=20, step=10, key="global_min_orders")
-    filas_libro = st.slider("Anuncios por tabla", 5, 25, 15, step=5, key="global_rows")
-
-    st.divider()
-
-    # Credenciales API Binance (Opcional)
-    with st.expander("🔑 API Keys Binance (Opcional)"):
-        st.caption("Ingresa tus llaves para visualizar tus anuncios activos.")
-        st.session_state.binance_api_key = st.text_input(
-            "API Key", value=st.session_state.binance_api_key, type="password"
-        )
-        st.session_state.binance_api_secret = st.text_input(
-            "API Secret", value=st.session_state.binance_api_secret, type="password"
-        )
-
-
-# ==============================================================================
-# 6. RENDERIZADO DE PESTAÑA 1: 🇻🇪 USDT-B (SECCIÓN ORIGINAL COMPLETA)
-# ==============================================================================
-def render_usdt_b_section():
-    st.markdown("### 🇻🇪 Mercado P2P — USDT-B (Bolívares)")
-
-    # Perfiles rápidos de bloque VES
-    st.caption("⚡ Perfiles rápidos de liquidez (Compra / Venta en Bs.):")
-    b1, b2, b3, b4, b5 = st.columns(5)
-    with b1:
-        if st.button("Bloque 1M / 1M", use_container_width=True, key="ves_btn_1m"):
-            st.session_state.ves_monto_compra = 1000000
-            st.session_state.ves_monto_venta = 1000000
-    with b2:
-        if st.button("250K / 250K", use_container_width=True, key="ves_btn_250k"):
-            st.session_state.ves_monto_compra = 250000
-            st.session_state.ves_monto_venta = 250000
-    with b3:
-        if st.button("50K / 50K", use_container_width=True, key="ves_btn_50k"):
-            st.session_state.ves_monto_compra = 50000
-            st.session_state.ves_monto_venta = 50000
-    with b4:
-        if st.button("1M Compra / 200K Venta", use_container_width=True, key="ves_btn_asym"):
-            st.session_state.ves_monto_compra = 1000000
-            st.session_state.ves_monto_venta = 200000
-    with b5:
-        if st.button("Sin Filtro (VES)", use_container_width=True, key="ves_btn_all"):
-            st.session_state.ves_monto_compra = 0
-            st.session_state.ves_monto_venta = 0
-
-    # Controles manuales y bancos Venezuela
-    f1, f2, f3 = st.columns([1, 1, 2.2])
-    with f1:
-        st.session_state.ves_monto_compra = st.number_input(
-            "Filtro Compra (Bs.)",
-            min_value=0,
-            step=10000,
-            value=int(st.session_state.ves_monto_compra),
-            key="ves_input_compra",
-        )
-    with f2:
-        st.session_state.ves_monto_venta = st.number_input(
-            "Filtro Venta (Bs.)",
-            min_value=0,
-            step=10000,
-            value=int(st.session_state.ves_monto_venta),
-            key="ves_input_venta",
-        )
-    with f3:
-        metodos_ves = st.multiselect(
-            "Métodos de Pago Venezuela",
-            options=["PagoMovil", "Banesco", "Mercantil", "Provincial", "Venezuela", "BNC", "Bancamiga"],
-            default=["PagoMovil", "Banesco"],
-            key="ves_metodos",
-        )
-
-    # Consulta de libros VES
-    df_buy_ves = fetch_p2p_orderbook(
-        fiat="VES",
-        trade_type="BUY",
-        trans_amount=st.session_state.ves_monto_compra,
-        pay_types=metodos_ves,
-        verified_only=solo_verificados,
-        min_finish_rate=min_tasa,
-        min_orders=min_ordenes,
-        rows=filas_libro,
-    )
-    df_sell_ves = fetch_p2p_orderbook(
-        fiat="VES",
-        trade_type="SELL",
-        trans_amount=st.session_state.ves_monto_venta,
-        pay_types=metodos_ves,
-        verified_only=solo_verificados,
-        min_finish_rate=min_tasa,
-        min_orders=min_ordenes,
-        rows=filas_libro,
-    )
-
-    # Cálculo de KPIs VES
-    best_buy_ves = df_buy_ves["Precio"].iloc[0] if not df_buy_ves.empty else 0.0
-    best_sell_ves = df_sell_ves["Precio"].iloc[0] if not df_sell_ves.empty else 0.0
-    avg3_buy_ves = df_buy_ves["Precio"].head(3).mean() if not df_buy_ves.empty else 0.0
-    avg3_sell_ves = df_sell_ves["Precio"].head(3).mean() if not df_sell_ves.empty else 0.0
-
-    spread_bs = best_buy_ves - best_sell_ves
-    spread_pct_ves = ((best_buy_ves - best_sell_ves) / best_sell_ves * 100) if best_sell_ves > 0 else 0.0
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric(
-        f"🟢 Mejor Compra ({st.session_state.ves_monto_compra:,.0f} Bs.)",
-        f"{best_buy_ves:,.2f} Bs.",
-        f"Top 3 prom: {avg3_buy_ves:,.2f} Bs.",
-    )
-    k2.metric(
-        f"🔴 Mejor Venta ({st.session_state.ves_monto_venta:,.0f} Bs.)",
-        f"{best_sell_ves:,.2f} Bs.",
-        f"Top 3 prom: {avg3_sell_ves:,.2f} Bs.",
-    )
-    k3.metric("Spread Neto (Bs.)", f"{spread_bs:+,.2f} Bs.")
-    k4.metric("Margen Bruto (%)", f"{spread_pct_ves:+.2f}%")
-
-    # Tablas lado a lado
-    c_left, c_right = st.columns(2)
-    with c_left:
-        st.markdown(f"#### 🟢 Comprar USDT — Filtro: `{st.session_state.ves_monto_compra:,.0f} Bs.`")
-        if not df_buy_ves.empty:
-            st.dataframe(
-                df_buy_ves.style.format(
-                    {
-                        "Precio": "{:,.2f} Bs.",
-                        "Disponible (USDT)": "{:,.2f}",
-                        "Mínimo": "{:,.0f}",
-                        "Máximo": "{:,.0f}",
-                        "Tasa (%)": "{:.1f}%",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.warning("No se encontraron anuncios de compra con estos filtros.")
-
-    with c_right:
-        st.markdown(f"#### 🔴 Vender USDT — Filtro: `{st.session_state.ves_monto_venta:,.0f} Bs.`")
-        if not df_sell_ves.empty:
-            st.dataframe(
-                df_sell_ves.style.format(
-                    {
-                        "Precio": "{:,.2f} Bs.",
-                        "Disponible (USDT)": "{:,.2f}",
-                        "Mínimo": "{:,.0f}",
-                        "Máximo": "{:,.0f}",
-                        "Tasa (%)": "{:.1f}%",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.warning("No se encontraron anuncios de venta con estos filtros.")
-
-    # Gráfico de profundidad VES
-    if not df_buy_ves.empty or not df_sell_ves.empty:
-        st.plotly_chart(
-            build_depth_chart(df_buy_ves, df_sell_ves, "Bs.", 2),
-            use_container_width=True,
-            key="chart_ves_depth",
-        )
-
-    # Simulador Avanzado de Operaciones (USDT-B)
-    with st.expander("🧮 Simulador Avanzado de Operaciones — USDT-B", expanded=True):
-        s1, s2, s3, s4 = st.columns(4)
-        with s1:
-            cap_ves = st.number_input(
-                "Capital a rotar (Bs.)",
-                min_value=1000.0,
-                value=float(st.session_state.ves_monto_compra if st.session_state.ves_monto_compra > 0 else 1000000.0),
-                step=50000.0,
-                key="sim_ves_cap",
-            )
-        with s2:
-            tasa_in_ves = st.number_input(
-                "Tasa Entrada (Bs./USDT)",
-                min_value=0.01,
-                value=float(best_sell_ves if best_sell_ves > 0 else 50.0),
-                format="%.2f",
-                key="sim_ves_in",
-            )
-        with s3:
-            tasa_out_ves = st.number_input(
-                "Tasa Salida (Bs./USDT)",
-                min_value=0.01,
-                value=float(best_buy_ves if best_buy_ves > 0 else 51.0),
-                format="%.2f",
-                key="sim_ves_out",
-            )
-        with s4:
-            fee_ves_pct = st.number_input(
-                "Comisión Maker por lado (%)",
-                min_value=0.0,
-                max_value=2.0,
-                value=0.15,
-                step=0.05,
-                format="%.2f",
-                key="sim_ves_fee",
-            )
-
-        fee_factor = 1.0 - (fee_ves_pct / 100.0)
-        usdt_netos_ves = (cap_ves / tasa_in_ves) * fee_factor if tasa_in_ves > 0 else 0.0
-        bs_finales = (usdt_netos_ves * tasa_out_ves) * fee_factor
-        ganancia_bs = bs_finales - cap_ves
-        roi_ves = (ganancia_bs / cap_ves * 100) if cap_ves > 0 else 0.0
-
-        r1, r2, r3 = st.columns(3)
-        r1.metric("USDT Netos Adquiridos", f"{usdt_netos_ves:,.2f} USDT")
-        r2.metric("Retorno Bruto/Neto (Bs.)", f"{bs_finales:,.2f} Bs.")
-        r3.metric("Ganancia Neta (Post-Comisiones)", f"{ganancia_bs:+,.2f} Bs.", f"{roi_ves:+.2f}% ROI")
-
-
-# ==============================================================================
-# 7. RENDERIZADO DE PESTAÑA 2: 🇪🇺 EURO-USDT (NUEVA SECCIÓN IDÉNTICA EN EUR)
-# ==============================================================================
-def render_euro_usdt_section():
-    st.markdown("### 🇪🇺 Mercado P2P — EURO-USDT")
-
-    # Perfiles rápidos solicitados para EURO-USDT
-    st.caption("⚡ Perfiles rápidos de liquidez (Compra / Venta en EUR):")
-    b1, b2, b3, b4 = st.columns(4)
-    with b1:
-        if st.button("500 Compra / 500 Venta", use_container_width=True, key="eur_btn_500_500"):
-            st.session_state.eur_monto_compra = 500
-            st.session_state.eur_monto_venta = 500
-    with b2:
-        if st.button("1.000 Compra / 200 Venta", use_container_width=True, key="eur_btn_1000_200"):
-            st.session_state.eur_monto_compra = 1000
-            st.session_state.eur_monto_venta = 200
-    with b3:
-        if st.button("1.000 Compra / 5.000 Venta", use_container_width=True, key="eur_btn_1000_5000"):
-            st.session_state.eur_monto_compra = 1000
-            st.session_state.eur_monto_venta = 5000
-    with b4:
-        if st.button("Sin Filtro (EUR)", use_container_width=True, key="eur_btn_all"):
-            st.session_state.eur_monto_compra = 0
-            st.session_state.eur_monto_venta = 0
-
-    # Controles manuales y métodos de pago Europa / España
-    f1, f2, f3 = st.columns([1, 1, 2.2])
-    with f1:
-        st.session_state.eur_monto_compra = st.number_input(
-            "Filtro Compra (€)",
-            min_value=0,
-            step=100,
-            value=int(st.session_state.eur_monto_compra),
-            key="eur_input_compra",
-        )
-    with f2:
-        st.session_state.eur_monto_venta = st.number_input(
-            "Filtro Venta (€)",
-            min_value=0,
-            step=100,
-            value=int(st.session_state.eur_monto_venta),
-            key="eur_input_venta",
-        )
-    with f3:
-        metodos_eur = st.multiselect(
-            "Métodos de Pago Europa / España",
-            options=[
-                "Bizum",
-                "SEPAinstant",
-                "SEPA",
-                "Revolut",
-                "Wise",
-                "BBVA",
-                "Santander",
-                "CaixaBank",
-                "BancoSabadell",
-                "ZEN",
-                "Paysera",
-            ],
-            default=["Bizum", "SEPAinstant"],
-            key="eur_metodos",
-        )
-
-    # Consulta de libros EUR y referencia Spot
-    spot_eur = get_spot_eur_usdt()
-    df_buy_eur = fetch_p2p_orderbook(
-        fiat="EUR",
-        trade_type="BUY",
-        trans_amount=st.session_state.eur_monto_compra,
-        pay_types=metodos_eur,
-        verified_only=solo_verificados,
-        min_finish_rate=min_tasa,
-        min_orders=min_ordenes,
-        rows=filas_libro,
-    )
-    df_sell_eur = fetch_p2p_orderbook(
-        fiat="EUR",
-        trade_type="SELL",
-        trans_amount=st.session_state.eur_monto_venta,
-        pay_types=metodos_eur,
-        verified_only=solo_verificados,
-        min_finish_rate=min_tasa,
-        min_orders=min_ordenes,
-        rows=filas_libro,
-    )
-
-    # Cálculo de KPIs EUR
-    best_buy_eur = df_buy_eur["Precio"].iloc[0] if not df_buy_eur.empty else 0.0
-    best_sell_eur = df_sell_eur["Precio"].iloc[0] if not df_sell_eur.empty else 0.0
-    avg3_buy_eur = df_buy_eur["Precio"].head(3).mean() if not df_buy_eur.empty else 0.0
-    avg3_sell_eur = df_sell_eur["Precio"].head(3).mean() if not df_sell_eur.empty else 0.0
-
-    spread_eur = best_buy_eur - best_sell_eur
-    spread_pct_eur = ((best_buy_eur - best_sell_eur) / best_sell_eur * 100) if best_sell_eur > 0 else 0.0
-    spot_gap_pct = ((best_buy_eur - spot_eur) / spot_eur * 100) if (spot_eur and best_buy_eur > 0) else 0.0
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric(
-        f"🟢 Mejor Compra ({st.session_state.eur_monto_compra:,.0f} €)",
-        f"{best_buy_eur:.3f} €",
-        f"Top 3 prom: {avg3_buy_eur:.3f} €",
-    )
-    k2.metric(
-        f"🔴 Mejor Venta ({st.session_state.eur_monto_venta:,.0f} €)",
-        f"{best_sell_eur:.3f} €",
-        f"Top 3 prom: {avg3_sell_eur:.3f} €",
-    )
-    k3.metric(
-        "Spread Neto (€) / Spot Ref",
-        f"{spread_eur:+.4f} €",
-        f"Spot: {spot_eur:.4f} € ({spot_gap_pct:+.2f}%)" if spot_eur else "Spot N/D",
-    )
-    k4.metric("Margen Bruto (%)", f"{spread_pct_eur:+.2f}%")
-
-    # Tablas lado a lado EUR
-    c_left, c_right = st.columns(2)
-    with c_left:
-        st.markdown(f"#### 🟢 Comprar USDT — Filtro: `{st.session_state.eur_monto_compra:,.0f} €`")
-        if not df_buy_eur.empty:
-            st.dataframe(
-                df_buy_eur.style.format(
-                    {
-                        "Precio": "{:.3f} €",
-                        "Disponible (USDT)": "{:,.2f}",
-                        "Mínimo": "{:,.0f} €",
-                        "Máximo": "{:,.0f} €",
-                        "Tasa (%)": "{:.1f}%",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.warning("No se encontraron anuncios de compra en EUR con estos filtros.")
-
-    with c_right:
-        st.markdown(f"#### 🔴 Vender USDT — Filtro: `{st.session_state.eur_monto_venta:,.0f} €`")
-        if not df_sell_eur.empty:
-            st.dataframe(
-                df_sell_eur.style.format(
-                    {
-                        "Precio": "{:.3f} €",
-                        "Disponible (USDT)": "{:,.2f}",
-                        "Mínimo": "{:,.0f} €",
-                        "Máximo": "{:,.0f} €",
-                        "Tasa (%)": "{:.1f}%",
-                    }
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.warning("No se encontraron anuncios de venta en EUR con estos filtros.")
-
-    # Gráfico de profundidad EUR
-    if not df_buy_eur.empty or not df_sell_eur.empty:
-        st.plotly_chart(
-            build_depth_chart(df_buy_eur, df_sell_eur, "€", 3),
-            use_container_width=True,
-            key="chart_eur_depth",
-        )
-
-    # Simulador Avanzado de Operaciones (EURO-USDT)
-    with st.expander("🧮 Simulador Avanzado de Operaciones — EURO-USDT", expanded=True):
-        s1, s2, s3, s4 = st.columns(4)
-        with s1:
-            cap_eur = st.number_input(
-                "Capital a rotar (€)",
-                min_value=50.0,
-                value=float(st.session_state.eur_monto_compra if st.session_state.eur_monto_compra > 0 else 500.0),
-                step=100.0,
-                key="sim_eur_cap",
-            )
-        with s2:
-            tasa_in_eur = st.number_input(
-                "Tasa Entrada (€/USDT)",
-                min_value=0.001,
-                value=float(best_sell_eur if best_sell_eur > 0 else 0.905),
-                format="%.3f",
-                key="sim_eur_in",
-            )
-        with s3:
-            tasa_out_eur = st.number_input(
-                "Tasa Salida (€/USDT)",
-                min_value=0.001,
-                value=float(best_buy_eur if best_buy_eur > 0 else 0.915),
-                format="%.3f",
-                key="sim_eur_out",
-            )
-        with s4:
-            fee_eur_pct = st.number_input(
-                "Comisión Maker por lado (%)",
-                min_value=0.0,
-                max_value=2.0,
-                value=0.10,
-                step=0.05,
-                format="%.2f",
-                key="sim_eur_fee",
-            )
-
-        fee_factor_eur = 1.0 - (fee_eur_pct / 100.0)
-        usdt_netos_eur = (cap_eur / tasa_in_eur) * fee_factor_eur if tasa_in_eur > 0 else 0.0
-        eur_finales = (usdt_netos_eur * tasa_out_eur) * fee_factor_eur
-        ganancia_eur = eur_finales - cap_eur
-        roi_eur = (ganancia_eur / cap_eur * 100) if cap_eur > 0 else 0.0
-
-        r1, r2, r3 = st.columns(3)
-        r1.metric("USDT Netos Adquiridos", f"{usdt_netos_eur:,.2f} USDT")
-        r2.metric("Retorno Bruto/Neto (€)", f"{eur_finales:,.2f} €")
-        r3.metric("Ganancia Neta (Post-Comisiones)", f"{ganancia_eur:+,.2f} €", f"{roi_eur:+.2f}% ROI")
-
-
-# ==============================================================================
-# 8. CUERPO PRINCIPAL CON SISTEMA ANTI-PESTAÑEO Y PESTAÑAS UNIFICADAS
-# ==============================================================================
-st.title("🐻 BEARS Terminal P2P")
-
-# Panel opcional de anuncios propios si se ingresan API Keys
-if st.session_state.binance_api_key and st.session_state.binance_api_secret:
-    df_my_ads = fetch_merchant_active_ads(
-        st.session_state.binance_api_key,
-        st.session_state.binance_api_secret,
-    )
-    if not df_my_ads.empty:
-        with st.expander("📋 Mis Anuncios Activos en Binance P2P", expanded=False):
-            st.dataframe(df_my_ads, use_container_width=True, hide_index=True)
-
-
-def render_terminal_workspace():
-    tab_ves, tab_eur = st.tabs(["🇻🇪 USDT-B", "🇪🇺 EURO-USDT"])
-    with tab_ves:
-        render_usdt_b_section()
-    with tab_eur:
-        render_euro_usdt_section()
-
-
-# Ejecución con st.fragment para evitar parpadeo de página completa al auto-refrescar
-if hasattr(st, "fragment") and auto_refresh:
-    @st.fragment(run_every=refresh_seconds)
-    def live_terminal_fragment():
-        render_terminal_workspace()
-
-    live_terminal_fragment()
-else:
-    render_terminal_workspace()
+            st.plotly_chart(fig_eur, use_container_width=True, config={'displayModeBar': False}, key="eur_
