@@ -52,7 +52,7 @@ with st.sidebar.expander("🔑 Credenciales API (Merchant)", expanded=False):
 capital_trabajo = st.sidebar.number_input("Capital de Trabajo (USDT)", value=400.0, step=50.0)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🎚️ Filtros de Mercado (USDT-B)")
+st.sidebar.markdown("### 🎚️ Filtros de Mercado")
 opcion_filtro = st.sidebar.radio("Selecciona los montos a escanear:", (
     "Perfil A (C: 70k | V: 20k)", 
     "Perfil B (C: 20k | V: 10k)", 
@@ -451,11 +451,11 @@ with tab_eur:
             if mercado_c_vol_eur:
                 precios_c_eur = [float(x['adv']['price']) for x in mercado_c_vol_eur]
                 vol_c_eur = [float(x['adv']['surplusAmount']) for x in mercado_c_vol_eur]
-                fig_eur.add_trace(go.Bar(x=precios_c_eur, y=vol_c_eur, name='Órdenes de Compra', marker_color='#0ecb81', opacity=0.85, width=0.0015))
+                fig_eur.add_trace(go.Bar(x=precios_c_eur, y=vol_c_eur, name='Órdenes de Compra', marker_color='#0ecb81', opacity=0.85))
             if mercado_v_vol_eur:
                 precios_v_eur = [float(x['adv']['price']) for x in mercado_v_vol_eur]
                 vol_v_eur = [float(x['adv']['surplusAmount']) for x in mercado_v_vol_eur]
-                fig_eur.add_trace(go.Bar(x=precios_v_eur, y=vol_v_eur, name='Órdenes de Venta', marker_color='#f6465d', opacity=0.85, width=0.0015))
+                fig_eur.add_trace(go.Bar(x=precios_v_eur, y=vol_v_eur, name='Órdenes de Venta', marker_color='#f6465d', opacity=0.85))
 
             fig_eur.update_layout(
                 paper_bgcolor='#12161f',
@@ -468,4 +468,141 @@ with tab_eur:
                 yaxis_title="Volumen Disponible",
                 barmode='group'
             )
-            st.plotly_chart(fig_eur, use_container_width=True, config={'displayModeBar': False}, key="eur_
+            st.plotly_chart(fig_eur, use_container_width=True, config={'displayModeBar': False}, key="eur_chart_vol")
+        render_seccion_compra_eur()
+
+    with col_centro_eur:
+        st.markdown('<div class="header-center">PANEL DE CONTROL & CÁLCULO (EUR)</div>', unsafe_allow_html=True)
+
+        @st.fragment(run_every=timedelta(seconds=4))
+        def render_spread_live_eur():
+            m_c = obtener_mercado_publico_eur("BUY", filtro_c_eur, metodos_eur_sel)
+            m_v = obtener_mercado_publico_eur("SELL", filtro_v_eur, metodos_eur_sel)
+            p_c = float(m_c[0]['adv']['price']) if m_c else 0.0
+            p_v = float(m_v[0]['adv']['price']) if m_v else 0.0
+            spread_val = p_c - p_v if (p_c and p_v) else 0.0
+            prof_pct = (spread_val / p_v * 100) if p_v > 0 else 0.0
+
+            html_spread = f"""
+            <div class="card-box" style="text-align: center;">
+                <div style="color: #848e9c; font-size: 12px; font-weight: bold;">SPREAD ACTUAL (EUR)</div>
+                <div style="font-size: 30px; font-weight: bold; color: #f0b90b; margin: 3px 0;">{spread_val:.4f} €</div>
+                <div style="color: #0ecb81; font-weight: bold; font-size: 13px;">Profit +{prof_pct:.2f}%</div>
+                <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; font-weight: bold;">
+                    <span style="color: #0ecb81;">Compra: {p_c:.3f} €</span>
+                    <span style="color: #f6465d;">Venta: {p_v:.3f} €</span>
+                </div>
+            </div>
+            """
+            st.markdown(html_spread, unsafe_allow_html=True)
+            st.session_state['p_compra_live_eur'], st.session_state['p_venta_live_eur'] = p_c, p_v
+        render_spread_live_eur()
+
+        st.markdown('<div class="header-center">🧮 SIMULADOR DE OPERACIÓN (EUR)</div>', unsafe_allow_html=True)
+        with st.container():
+            if st.button("🔄 Cargar Tasas en Vivo (EUR)", use_container_width=True, key="eur_btn_cargar"):
+                st.session_state['eur_calc_sr'] = float(st.session_state.get('p_compra_live_eur', 0.920))
+                st.session_state['eur_calc_br'] = float(st.session_state.get('p_venta_live_eur', 0.910))
+            vip_nivel_eur = st.selectbox("Nivel VIP (Comisión)", ["Sin verificar (0.25%)", "Bronce (-20%)", "Plata (-30%)", "Oro (-50%)"], key="eur_vip")
+            desc_eur = 0.0 if "Sin" in vip_nivel_eur else (0.20 if "Bronce" in vip_nivel_eur else (0.30 if "Plata" in vip_nivel_eur else 0.50))
+            active_fee_rate_eur = 0.0025 * (1 - desc_eur)
+
+            c_in1_eur, c_in2_eur = st.columns(2)
+            with c_in1_eur: calc_usdt_eur = st.number_input("USDT a operar", value=capital_trabajo, step=50.0, key="eur_calc_usdt")
+            with c_in2_eur: calc_sell_rate_eur = st.number_input("Tasa Venta (€)", step=0.001, format="%.3f", key="eur_calc_sr")
+            calc_buy_rate_eur = st.number_input("Tasa Compra (€)", step=0.001, format="%.3f", key="eur_calc_br")
+
+            fiat_recibido_eur = calc_usdt_eur * calc_sell_rate_eur
+            usdt_recuperados_eur = fiat_recibido_eur / calc_buy_rate_eur if calc_buy_rate_eur > 0 else 0
+            gross_profit_eur = usdt_recuperados_eur - calc_usdt_eur
+            total_fee_eur = (calc_usdt_eur * active_fee_rate_eur) + (usdt_recuperados_eur * active_fee_rate_eur)
+            net_profit_calc_eur = gross_profit_eur - total_fee_eur
+
+            html_sim_eur = f"""
+            <div style="font-size: 11px; color: #848e9c; margin-top: 6px; display: flex; justify-content: space-between;">
+                <span>Bruta: <b style="color: #eaecef;">{gross_profit_eur:.2f} USDT</b></span>
+                <span style="color: #f6465d;">Comisión: -{total_fee_eur:.2f} USDT</span>
+            </div>
+            <div style="font-size: 14px; color: #2ebd85; margin-top: 4px; text-align: center; font-weight: bold;">
+                Ganancia Neta: +{net_profit_calc_eur:.2f} USDT
+            </div>
+            """
+            st.markdown(html_sim_eur, unsafe_allow_html=True)
+
+        st.metric(label="GANANCIA ACUMULADA SESIÓN (EUR)", value=f"{st.session_state.ganancia_sesion_eur:.2f} USDT", delta=f"Ciclos: {st.session_state.ciclos_eur}")
+        btn_col1_eur, btn_col2_eur = st.columns(2)
+        with btn_col1_eur:
+            if st.button("➕ REGISTRAR", use_container_width=True, key="eur_btn_reg"):
+                st.session_state.ganancia_sesion_eur += net_profit_calc_eur
+                st.session_state.ciclos_eur += 1
+                st.rerun()
+        with btn_col2_eur:
+            if st.button("🗑️ REINICIAR", use_container_width=True, key="eur_btn_reset"):
+                st.session_state.ganancia_sesion_eur = 0.0
+                st.session_state.ciclos_eur = 0
+                st.rerun()
+
+    with col_venta_eur:
+        st.markdown('<div class="header-venta">VENTA (EUR)</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="display: flex; justify-content: space-between; background: #161a23; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #848e9c; margin-bottom: 8px;"><span><b>{header_bancos_eur}</b></span><span style="color: #f6465d; font-weight: bold;">{str_filtro_v_eur}</span></div>', unsafe_allow_html=True)
+
+        @st.fragment(run_every=timedelta(seconds=4))
+        def render_seccion_venta_eur():
+            mis_anuncios = obtener_mis_anuncios(api_key_input, secret_key_input)
+            anuncios_venta_eur = [ad for ad in mis_anuncios if ad.get('tradeType') == 'SELL' and ad.get('fiatUnit') == 'EUR']
+            if anuncios_venta_eur:
+                html_v = '<table class="p2p-table"><tr><th>NRO</th><th>PRECIO</th><th>DISP</th><th>ESTADO</th></tr>'
+                for ad in anuncios_venta_eur:
+                    ad_no = str(ad.get('adNo'))[-6:]
+                    price = float(ad.get('price', 0))
+                    disp = float(ad.get('surplusAmount', 0))
+                    status = ad.get('advStatus')
+                    html_v += f"<tr><td>{ad_no}</td><td>{price:,.3f} €</td><td>{disp:,.1f}</td><td>{status}</td></tr>"
+                html_v += '</table>'
+                st.markdown(html_v, unsafe_allow_html=True)
+            else:
+                mercado_v_eur = obtener_mercado_publico_eur("SELL", filtro_v_eur, metodos_eur_sel)
+                if mercado_v_eur:
+                    html_v = '<table class="p2p-table"><tr><th>#</th><th>PRECIO</th><th>DISP</th><th>USUARIO</th></tr>'
+                    for idx, item in enumerate(mercado_v_eur, 1):
+                        price = float(item['adv']['price'])
+                        disp = float(item['adv']['surplusAmount'])
+                        user = item['advertiser']['nickName'][:12]
+                        html_v += f"<tr><td>#{idx}</td><td>{price:,.3f} €</td><td>{disp:.1f}</td><td>{user}</td></tr>"
+                    html_v += '</table>'
+                    st.markdown(html_v, unsafe_allow_html=True)
+                else:
+                    st.info("Buscando anuncios de venta EUR...")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            ordenes_activas, error_ordenes = obtener_ordenes_activas(api_key_input, secret_key_input)
+            ordenes_activas_eur = [o for o in ordenes_activas if o.get('fiatUnit') == 'EUR'] if ordenes_activas else []
+            total_usdt_activas_eur = sum([float(o.get('amount', 0)) for o in ordenes_activas_eur]) if ordenes_activas_eur else 0.0
+
+            header_ordenes_eur = f"""
+            <div style="color: #f0b90b; font-weight: bold; font-size: 15px; border-bottom: 2px solid #f0b90b; padding-bottom: 4px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                <span>📋 MIS ÓRDENES ACTIVAS (EUR)</span>
+                <span style="color: #eaecef; font-size: 12px; background: #161a23; padding: 2px 6px; border-radius: 4px;">Total: {total_usdt_activas_eur:,.2f} USDT</span>
+            </div>
+            """
+            st.markdown(header_ordenes_eur, unsafe_allow_html=True)
+
+            if error_ordenes:
+                if error_ordenes == "Faltan credenciales":
+                    st.markdown('<div style="text-align: center; color: #848e9c; font-size: 13px; padding: 10px; background: #12161f; border-radius: 4px;">Ingresa tus API Keys.</div>', unsafe_allow_html=True)
+                else:
+                    st.error(error_ordenes)
+            elif ordenes_activas_eur:
+                html_o = '<table class="p2p-table"><tr><th>TIPO</th><th>FIAT</th><th>USDT</th><th>ESTADO</th></tr>'
+                for o in ordenes_activas_eur:
+                    is_buy = (o.get('tradeType') == 'BUY')
+                    tipo_color, tipo_str = ("#0ecb81", "COMPRA") if is_buy else ("#f6465d", "VENTA")
+                    fiat = float(o.get('totalPrice', 0))
+                    amount = float(o.get('amount', 0))
+                    status = o.get('orderStatus', '')
+                    html_o += f"<tr><td style='color: {tipo_color}; font-weight: bold;'>{tipo_str}</td><td>{fiat:,.2f} EUR</td><td>{amount:,.2f}</td><td>{status}</td></tr>"
+                html_o += '</table>'
+                st.markdown(html_o, unsafe_allow_html=True)
+            else:
+                st.markdown('<div style="text-align: center; color: #848e9c; font-size: 13px; padding: 10px; background: #12161f; border-radius: 4px;">No tienes órdenes activas en este momento.</div>', unsafe_allow_html=True)
+        render_seccion_venta_eur()
